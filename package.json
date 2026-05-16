@@ -1,0 +1,12 @@
+{
+  "name": "rocket-sim-single-html",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Single-file rocket launch simulator HTML lint checks",
+  "scripts": {
+    "test:html": "npx htmlhint index.html"
+  },
+  "devDependencies": {
+    "htmlhint": "^1.6.3"
+  }
+}
