@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>3D 真实火箭发射与入轨模拟（单文件）</title>
+  <style>
+    :root { --bg:#010208; --panel:rgba(8,14,28,.92); --text:#e8eef6; --accent:#ff6a34; --blue:#4da6ff; --green:#2ef28b; --border:rgba(255,255,255,.14); }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { background:#000; overflow:hidden; font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif; color:var(--text); }
+    #canvas-container { position:fixed; inset:0; }
+    #loading { position:fixed; inset:0; z-index:100; display:flex; flex-direction:column; justify-content:center; align-items:center; background:radial-gradient(circle at center,#0c1222,#02040b); transition:opacity .5s; }
+    .bar { width:min(320px,80vw); height:4px; background:rgba(255,255,255,.12); border-radius:999px; overflow:hidden; margin-top:10px; }
+    .fill { height:100%; width:0; background:linear-gradient(90deg,#ff6a34,#ffc36d); }
+    #hud { position:fixed; top:10px; left:50%; transform:translateX(-50%); z-index:30; display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
+    .chip { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:6px 10px; font:600 12px Consolas,monospace; backdrop-filter:blur(10px); }
+    .phase { color:var(--accent); border-color:#ff6a34; }
+    #controls { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); z-index:35; display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
+    button { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:18px; padding:9px 13px; font-size:12px; cursor:pointer; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:700; }
+    #panel { position:fixed; right:10px; top:10px; z-index:32; width:min(360px,92vw); max-height:88vh; overflow:auto; padding:10px; border:1px solid var(--border); border-radius:12px; background:var(--panel); }
+    .row { display:grid; grid-template-columns:118px 1fr 56px; gap:6px; align-items:center; margin:6px 0; font-size:12px; }
+    #map { position:fixed; right:16px; bottom:80px; width:180px; height:180px; z-index:25; border-radius:50%; border:1px solid var(--border); background:rgba(2,7,16,.88); }
+    @media (max-width:900px){ #panel { transform:translateX(calc(100% - 34px)); transition:.2s } #panel:hover,#panel:focus-within{ transform:translateX(0) } #map{ width:120px; height:120px; bottom:62px; right:10px; } }
+  </style>
+</head>
+<body>
+  <div id="loading"><div>🚀 构建 3D 场景中...</div><div class="bar"><div class="fill" id="fill"></div></div></div>
+  <div id="canvas-container"></div>
+  <canvas id="map" width="180" height="180"></canvas>
+
+  <div id="hud">
+    <span class="chip phase" id="phase">就绪待命</span><span class="chip" id="tm">T+0:00</span><span class="chip" id="alt">高度 0.00 km</span><span class="chip" id="spd">速度 0.000 km/s</span><span class="chip" id="g">加速度 0.00 g</span><span class="chip" id="q">动压 0.0 kPa</span>
+  </div>
+
+  <div id="controls">
+    <button class="primary" id="launch">发射</button><button id="v">视角</button><button id="x1">1×</button><button id="x5">5×</button><button id="x10">10×</button><button id="reset">重置</button>
+  </div>
+
+  <div id="panel">
+    <div class="row"><label>总质量(kg)</label><input id="m0" type="range" min="180000" max="700000" value="300000" step="1000"/><span id="m0v"></span></div>
+    <div class="row"><label>一级推力(MN)</label><input id="t1" type="range" min="2.5" max="7.0" value="4.4" step="0.1"/><span id="t1v"></span></div>
+    <div class="row"><label>二级推力(MN)</label><input id="t2" type="range" min="0.6" max="1.4" value="0.9" step="0.05"/><span id="t2v"></span></div>
+    <div class="row"><label>俯仰开始(s)</label><input id="ps" type="range" min="8" max="40" value="12" step="1"/><span id="psv"></span></div>
+    <div class="row"><label>俯仰速率(°/s)</label><input id="pr" type="range" min="0.2" max="1.2" value="0.58" step="0.01"/><span id="prv"></span></div>
+    <div class="row"><label>目标轨道(km)</label><input id="ta" type="range" min="200" max="500" value="300" step="5"/><span id="tav"></span></div>
+    <p style="font-size:12px;color:#b9cae8;line-height:1.45;margin-top:6px">说明：真实 3D（Three.js）场景，含地球、云层、星空、发射台、尾焰粒子、地面监视轨道图。模型含重力衰减、阻力、分级、质量流失与重力转弯。</p>
+  </div>
+
+  <script type="importmap">
+  {"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const GM=3.986004418e14,R=6371000,SCALE=0.001,rho0=1.225,H=8500,g0=9.80665;
+    const $=id=>document.getElementById(id); const fill=$('fill'); const map=$('map'); const mctx=map.getContext('2d');
+    const ids=['m0','t1','t2','ps','pr','ta'];
+    const P=()=>({m0:+$('m0').value,t1:+$('t1').value*1e6,t2:+$('t2').value*1e6,ps:+$('ps').value,pr:+$('pr').value*Math.PI/180,ta:+$('ta').value*1000});
+    function showP(){const p=P();$('m0v').textContent=(p.m0/1000).toFixed(0)+'t';$('t1v').textContent=(p.t1/1e6).toFixed(2);$('t2v').textContent=(p.t2/1e6).toFixed(2);$('psv').textContent=p.ps;$('prv').textContent=(p.pr*180/Math.PI).toFixed(2);$('tav').textContent=(p.ta/1000).toFixed(0);} ids.forEach(i=>$(i).oninput=showP); showP();
+
+    const renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2)); $('canvas-container').appendChild(renderer.domElement);
+    const scene=new THREE.Scene(); scene.background=new THREE.Color(0x00040b);
+    const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.1,70000); camera.position.set(26,6384,30);
+    const controls=new OrbitControls(camera,renderer.domElement); controls.enableDamping=true; controls.target.set(0,6371,0);
+
+    fill.style.width='15%'; scene.add(new THREE.AmbientLight(0x3b4b65,1.8)); const sun=new THREE.DirectionalLight(0xfff4dd,2.2); sun.position.set(8000,9000,5000); scene.add(sun);
+    fill.style.width='35%';
+    const earth=new THREE.Mesh(new THREE.SphereGeometry(6371,96,72), new THREE.MeshStandardMaterial({color:0x225a88,roughness:.9,metalness:0})); scene.add(earth);
+    const clouds=new THREE.Mesh(new THREE.SphereGeometry(6372.4,64,48), new THREE.MeshStandardMaterial({color:0xffffff,transparent:true,opacity:.08})); scene.add(clouds);
+    const starsG=new THREE.BufferGeometry(),N=3500,a=new Float32Array(N*3); for(let i=0;i<N;i++){const rr=12000+Math.random()*12000,t=Math.random()*Math.PI*2,p=Math.acos(2*Math.random()-1); a[i*3]=rr*Math.sin(p)*Math.cos(t); a[i*3+1]=rr*Math.sin(p)*Math.sin(t); a[i*3+2]=rr*Math.cos(p);} starsG.setAttribute('position',new THREE.BufferAttribute(a,3)); scene.add(new THREE.Points(starsG,new THREE.PointsMaterial({size:1,color:0xffffff})));
+    fill.style.width='55%';
+    const pad=new THREE.Mesh(new THREE.CylinderGeometry(.9,1.3,.2,28),new THREE.MeshStandardMaterial({color:0x59677a})); pad.position.set(0,6371,0); scene.add(pad);
+    const rocket=new THREE.Group(); const body=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,1.2,24),new THREE.MeshStandardMaterial({color:0xf0f0f0,metalness:.4,roughness:.2})); body.position.y=.6; rocket.add(body); const cone=new THREE.Mesh(new THREE.ConeGeometry(.08,.2,24),new THREE.MeshStandardMaterial({color:0xf5f5f5})); cone.position.y=1.3; rocket.add(cone); rocket.position.set(0,(R+50)*SCALE,0); scene.add(rocket);
+
+    fill.style.width='75%';
+    const flameGeo=new THREE.BufferGeometry(),MAX=2200,fpos=new Float32Array(MAX*3),fcol=new Float32Array(MAX*3); let fi=0; const pdata=Array.from({length:MAX},()=>({a:false,l:0,m:0,p:new THREE.Vector3(),v:new THREE.Vector3()})); flameGeo.setAttribute('position',new THREE.BufferAttribute(fpos,3)); flameGeo.setAttribute('color',new THREE.BufferAttribute(fcol,3)); const flame=new THREE.Points(flameGeo,new THREE.PointsMaterial({size:10,vertexColors:true,transparent:true,opacity:.9,blending:THREE.AdditiveBlending,depthWrite:false,sizeAttenuation:false})); scene.add(flame);
+    const emit=(p,v,l)=>{const d=pdata[fi];d.a=true;d.l=l;d.m=l;d.p.copy(p);d.v.copy(v);fi=(fi+1)%MAX;};
+
+    fill.style.width='95%'; setTimeout(()=>{$('loading').style.opacity=0; setTimeout(()=>$('loading').style.display='none',500);},300);
+
+    const S={la:false,t:0,stage:1,m:0,dry1:18000,dry2:4500,f1:0,f2:0,pitch:Math.PI/2,yaw:0,pos:new THREE.Vector3(0,R+50,0),vel:new THREE.Vector3(),th:0,maxQ:0,view:0,ts:1};
+    function reset(){const p=P();S.la=false;S.t=0;S.stage=1;S.f1=p.m0*0.62;S.f2=p.m0*0.2;S.m=p.m0;S.pitch=Math.PI/2;S.yaw=0;S.pos.set(0,R+50,0);S.vel.set(0,0,0);S.th=0;S.maxQ=0;rocket.position.set(0,(R+50)*SCALE,0);$('phase').textContent='就绪待命';}
+    reset();
+
+    $('launch').onclick=()=>{if(!S.la){S.la=true;$('phase').textContent='点火起飞';}}; $('reset').onclick=reset; $('v').onclick=()=>S.view=(S.view+1)%3; $('x1').onclick=()=>S.ts=1; $('x5').onclick=()=>S.ts=5; $('x10').onclick=()=>S.ts=10;
+
+    const clock=new THREE.Clock();
+    function step(dt){const p=P(); S.t+=dt; const alt=S.pos.length()-R; const rho=alt>150000?1e-12:rho0*Math.exp(-Math.max(0,alt)/H);
+      if(S.t>p.ps) S.pitch=Math.max(0.03,S.pitch-p.pr*dt);
+      let T=0,isp=0;
+      if(S.stage===1&&S.f1>0){T=p.t1;isp=300; const md=T/(isp*g0),b=Math.min(S.f1,md*dt); S.f1-=b; S.m-=b; if(S.f1<=0){S.stage=2;S.m=Math.max(S.dry2+S.f2,S.m- S.dry1);$('phase').textContent='一级分离/二级点火';}}
+      else if(S.stage===2&&S.f2>0){T=p.t2;isp=345; const md=T/(isp*g0),b=Math.min(S.f2,md*dt); S.f2-=b; S.m-=b; if(S.f2<=0){$('phase').textContent='滑行/圆化';}}
+      const dir=new THREE.Vector3(Math.cos(S.pitch)*Math.cos(S.yaw),Math.sin(S.pitch),Math.cos(S.pitch)*Math.sin(S.yaw)).normalize();
+      const v=S.vel.length()+1e-6; const q=.5*rho*v*v; S.maxQ=Math.max(S.maxQ,q);
+      const drag=S.vel.clone().normalize().multiplyScalar(-q*10.5);
+      const grav=S.pos.clone().normalize().multiplyScalar(-GM/(S.pos.length()*S.pos.length));
+      const acc=dir.multiplyScalar(T).add(drag).add(grav).multiplyScalar(1/Math.max(1000,S.m));
+      S.vel.add(acc.multiplyScalar(dt)); S.pos.add(S.vel.clone().multiplyScalar(dt)); S.th=T;
+      if((alt>p.ta-7000)&&(Math.abs(S.vel.y)<90)&&Math.abs(Math.hypot(S.vel.x,S.vel.z)-Math.sqrt(GM/S.pos.length()))<220){$('phase').textContent='入轨成功';S.la=false;}
+      const nozzle=rocket.position.clone().add(new THREE.Vector3(0,-.62,0)); if(T>0){for(let i=0;i<40*S.ts;i++){emit(nozzle,new THREE.Vector3((Math.random()-.5)*.2,-1.4-Math.random()*1.8,(Math.random()-.5)*.2),.8+Math.random()*1.6);}}
+      rocket.position.set(S.pos.x*SCALE,S.pos.y*SCALE,S.pos.z*SCALE); rocket.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(Math.cos(S.pitch),Math.sin(S.pitch),0).normalize());
+      const sp=S.vel.length(); $('tm').textContent=`T+${Math.floor(S.t/60)}:${String(Math.floor(S.t%60)).padStart(2,'0')}`; $('alt').textContent=`高度 ${(alt/1000).toFixed(2)} km`; $('spd').textContent=`速度 ${(sp/1000).toFixed(3)} km/s`; $('g').textContent=`加速度 ${(S.th/(Math.max(1,S.m)*g0)-GM/(S.pos.length()*S.pos.length())/g0).toFixed(2)} g`; $('q').textContent=`动压 ${(q/1000).toFixed(1)} kPa`;
+    }
+
+    function drawMap(){const w=map.width,h=map.height,cx=w/2,cy=h/2,r=w*.38; mctx.clearRect(0,0,w,h); mctx.strokeStyle='#3d6f9a'; mctx.beginPath(); mctx.arc(cx,cy,r,0,7); mctx.stroke(); const alt=Math.max(0,S.pos.length()-R),rr=Math.min(r*1.4,r*(1+alt/500000)); const a=Math.atan2(S.pos.x,S.pos.y); mctx.fillStyle='#fff'; mctx.beginPath(); mctx.arc(cx+rr*Math.sin(a),cy-rr*Math.cos(a),3,0,7); mctx.fill(); }
+
+    function animate(){requestAnimationFrame(animate); const dt=Math.min(clock.getDelta(),.05)*S.ts; if(S.la)step(dt);
+      for(let i=0;i<MAX;i++){const p=pdata[i]; if(!p.a)continue; p.l-=clock.getDelta(); if(p.l<=0){p.a=false; fpos[i*3+1]=-9999; continue;} p.p.add(p.v.clone().multiplyScalar(.7)); p.v.multiplyScalar(.96); fpos[i*3]=p.p.x;fpos[i*3+1]=p.p.y;fpos[i*3+2]=p.p.z; const t=p.l/p.m; fcol[i*3]=1;fcol[i*3+1]=0.3+t*0.7;fcol[i*3+2]=0.1+t*0.2; }
+      flameGeo.attributes.position.needsUpdate=true; flameGeo.attributes.color.needsUpdate=true;
+      clouds.rotation.y+=0.00015; if(S.view===1){camera.position.lerp(rocket.position.clone().add(new THREE.Vector3(2,1.5,2)),.08); camera.lookAt(rocket.position);} else if(S.view===2){camera.position.lerp(rocket.position.clone().add(new THREE.Vector3(10,8,0)),.06); camera.lookAt(rocket.position);} else {controls.target.lerp(rocket.position,.05); controls.update();}
+      drawMap(); renderer.render(scene,camera);
+    }
+
+    addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight);});
+    animate();
+  </script>
+</body>
+</html>
