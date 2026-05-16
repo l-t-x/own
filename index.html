@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>超真实火箭发射与入轨模拟器（单文件）</title>
+  <style>
+    :root{
+      --bg:#060b16;
+      --panel:#0f172a;
+      --panel2:#111f3b;
+      --txt:#e6edf7;
+      --muted:#9fb0cc;
+      --accent:#51e5ff;
+      --ok:#7ef8b4;
+      --warn:#ffd76b;
+      --danger:#ff7b7b;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:radial-gradient(circle at 30% 20%,#0d1833 0%,var(--bg) 60%);color:var(--txt);font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden}
+    #app{display:grid;grid-template-columns:1fr 360px;height:100%}
+    #main{position:relative;min-width:0}
+    canvas{width:100%;height:100%;display:block}
+    #hud{position:absolute;top:10px;left:10px;display:flex;flex-wrap:wrap;gap:8px;z-index:10}
+    .badge{background:rgba(8,14,30,.66);backdrop-filter:blur(4px);padding:6px 10px;border:1px solid rgba(149,188,255,.2);border-radius:8px;font-size:12px}
+    #refFrame{position:absolute;right:14px;bottom:14px;width:min(34vw,360px);aspect-ratio:16/9;border:1px solid rgba(161,220,255,.4);border-radius:8px;overflow:hidden;z-index:12;background:#040812}
+    #refLabel{position:absolute;left:8px;top:6px;font-size:11px;color:#c6ddff;background:rgba(0,0,0,.45);padding:2px 6px;border-radius:5px;z-index:2}
+    #refCanvas{width:100%;height:100%}
+    #side{background:linear-gradient(180deg,var(--panel) 0%,#0a1225 100%);border-left:1px solid rgba(165,200,255,.2);overflow:auto;padding:14px}
+    h1{font-size:18px;margin:0 0 10px}
+    h2{font-size:14px;margin:14px 0 8px;color:#d5e7ff}
+    p,li{font-size:12px;line-height:1.55;color:var(--muted)}
+    .card{border:1px solid rgba(152,190,255,.22);background:rgba(13,28,56,.45);border-radius:10px;padding:10px;margin-bottom:10px}
+    .row{display:grid;grid-template-columns:130px 1fr 58px;gap:8px;align-items:center;margin:6px 0}
+    input[type=range]{width:100%}
+    button{background:#10284a;border:1px solid rgba(153,203,255,.4);color:#ddf6ff;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:12px}
+    button:hover{filter:brightness(1.1)}
+    .btns{display:flex;gap:8px;flex-wrap:wrap}
+    code{font-size:11px;color:#d6f5ff;background:#0d213f;padding:2px 5px;border-radius:5px}
+    @media (max-width:1000px){
+      #app{grid-template-columns:1fr}
+      #side{position:absolute;right:0;top:0;width:min(92vw,380px);height:100%;z-index:20;transform:translateX(calc(100% - 36px));transition:transform .2s}
+      #side:hover,#side:focus-within{transform:translateX(0)}
+      #side::before{content:"参数";position:absolute;left:-36px;top:22px;background:#0d2447;padding:8px 9px;border-radius:8px 0 0 8px;border:1px solid rgba(153,203,255,.3);font-size:12px}
+      #refFrame{width:min(44vw,320px)}
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="main">
+    <canvas id="sim"></canvas>
+    <div id="hud">
+      <div class="badge" id="phase">阶段: 待机</div>
+      <div class="badge" id="time">T+0.0 s</div>
+      <div class="badge" id="alt">高度: 0 m</div>
+      <div class="badge" id="vel">速度: 0 m/s</div>
+      <div class="badge" id="apo">远地点(估): 0 km</div>
+      <div class="badge" id="qbar">动压q: 0 kPa</div>
+    </div>
+    <div id="refFrame">
+      <div id="refLabel">跟踪窗口（地面参照）</div>
+      <canvas id="refCanvas"></canvas>
+    </div>
+  </div>
+  <aside id="side">
+    <h1>火箭发射与入轨模拟（单 HTML）</h1>
+    <div class="card">
+      <h2>1) 发射参数</h2>
+      <div class="row"><label>总质量 m0 (kg)</label><input id="m0" type="range" min="150000" max="700000" value="420000" step="1000"><span id="m0v"></span></div>
+      <div class="row"><label>推力 T (MN)</label><input id="thrust" type="range" min="3" max="12" value="7.6" step="0.1"><span id="Tv"></span></div>
+      <div class="row"><label>Isp (s)</label><input id="isp" type="range" min="220" max="360" value="305" step="1"><span id="Ispv"></span></div>
+      <div class="row"><label>俯仰程序开始(s)</label><input id="pitStart" type="range" min="5" max="40" value="12" step="1"><span id="Psv"></span></div>
+      <div class="row"><label>俯仰速率(°/s)</label><input id="pitRate" type="range" min="0.15" max="1.4" value="0.52" step="0.01"><span id="Prv"></span></div>
+      <div class="row"><label>目标轨道高度(km)</label><input id="targetAlt" type="range" min="180" max="550" value="220" step="5"><span id="TAv"></span></div>
+      <div class="row"><label>时间倍率</label><input id="warp" type="range" min="0.4" max="6" value="1" step="0.1"><span id="Wv"></span></div>
+      <div class="btns">
+        <button id="launch">点火发射</button>
+        <button id="reset">复位</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>2) 技术说明（简化但可解释）</h2>
+      <ul>
+        <li>动力学：2D 平面下积分 <code>F=ma</code>，包含重力随高度衰减、推力、阻力。</li>
+        <li>燃料流率：<code>ṁ=T/(Isp·g0)</code>，质量随时间减少，推重比动态变化。</li>
+        <li>气动阻力：<code>D=0.5ρv²CdA</code>；大气密度按指数模型下降。</li>
+        <li>入轨判据：当高度接近目标、垂向速度小且切向速度接近圆轨道速度 <code>vc=√(μ/r)</code>，判定“入轨成功”。</li>
+      </ul>
+      <h2>3) 观察增强设计</h2>
+      <ul>
+        <li>主视角自动缩放，保持火箭 + 地面 + 云层参照同屏。</li>
+        <li>右下角“地面跟踪窗口”固定镜头，便于感知爬升速度与喷焰尺度。</li>
+        <li>星空、云层、发射塔与比例尺增强速度/高度直觉。</li>
+      </ul>
+      <h2>4) 操作指引</h2>
+      <ol>
+        <li>保持默认参数，点击“点火发射”，先观察 Max-Q（动压峰值）附近姿态变化。</li>
+        <li>若过早转弯导致高度不足，降低俯仰速率或推迟俯仰开始。</li>
+        <li>若高度过高但速度不足，适当增推力或增 Isp，提升末段水平加速能力。</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h2>5) 论文/公开资料建议（用于参数校准）</h2>
+      <p>建议检索关键词：<code>gravity turn guidance launch vehicle</code>、<code>ascent trajectory optimization LEO</code>、<code>Falcon 9 ascent profile Max-Q</code>、<code>Tsiolkovsky equation staging</code>。本演示未直接联网下载论文，但已按主流公开模型抽象参数结构，便于后续替换为论文数据。</p>
+    </div>
+  </aside>
+</div>
+<script>
+(() => {
+  const G0=9.80665, Re=6371000, mu=3.986004418e14, rho0=1.225, H=8500;
+  const sim = document.getElementById('sim'), ctx = sim.getContext('2d');
+  const ref = document.getElementById('refCanvas'), rctx = ref.getContext('2d');
+  const ui = {
+    phase: byId('phase'), time:byId('time'), alt:byId('alt'), vel:byId('vel'), apo:byId('apo'), qbar:byId('qbar'),
+    launch:byId('launch'), reset:byId('reset')
+  };
+  const controls = ['m0','thrust','isp','pitStart','pitRate','targetAlt','warp'].map(byId);
+  const labels = {m0:'m0v', thrust:'Tv', isp:'Ispv', pitStart:'Psv', pitRate:'Prv', targetAlt:'TAv', warp:'Wv'};
+  const S = {running:false, t:0, x:0, y:0, vx:0, vy:0, m:0, dry:0, fuel:0, pitch:90, maxQ:0, phase:'待机'};
+
+  function byId(id){return document.getElementById(id)}
+  function resize(){
+    sim.width=sim.clientWidth*devicePixelRatio; sim.height=sim.clientHeight*devicePixelRatio;
+    ref.width=ref.clientWidth*devicePixelRatio; ref.height=ref.clientHeight*devicePixelRatio;
+    ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); rctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  }
+  addEventListener('resize', resize); resize();
+
+  function getP(){
+    return {
+      m0:+byId('m0').value,
+      thrust:+byId('thrust').value*1e6,
+      isp:+byId('isp').value,
+      pitStart:+byId('pitStart').value,
+      pitRate:+byId('pitRate').value*Math.PI/180,
+      targetAlt:+byId('targetAlt').value*1000,
+      warp:+byId('warp').value,
+      CdA:11.5,
+      tower:120
+    }
+  }
+  function refreshLabels(){
+    const p=getP();
+    byId(labels.m0).textContent = (p.m0/1000).toFixed(0)+' t';
+    byId(labels.thrust).textContent=(p.thrust/1e6).toFixed(1);
+    byId(labels.isp).textContent=p.isp.toFixed(0);
+    byId(labels.pitStart).textContent=p.pitStart.toFixed(0);
+    byId(labels.pitRate).textContent=(p.pitRate*180/Math.PI).toFixed(2);
+    byId(labels.targetAlt).textContent=(p.targetAlt/1000).toFixed(0);
+    byId(labels.warp).textContent=p.warp.toFixed(1)+'x';
+  }
+  controls.forEach(c=>c.addEventListener('input', refreshLabels)); refreshLabels();
+
+  function reset(){
+    const p=getP();
+    Object.assign(S,{running:false,t:0,x:0,y:0,vx:0,vy:0,m:p.m0,dry:p.m0*0.16,fuel:p.m0*0.84,pitch:Math.PI/2,maxQ:0,phase:'待机'});
+  }
+  reset();
+
+  ui.launch.onclick=()=>{if(!S.running){S.running=true; S.phase='起飞爬升'}};
+  ui.reset.onclick=reset;
+
+  let last=performance.now();
+  requestAnimationFrame(loop);
+
+  function loop(now){
+    const p=getP();
+    let dt=Math.min(0.03,(now-last)/1000)*p.warp; last=now;
+    if(S.running) step(dt,p);
+    render(p);
+    requestAnimationFrame(loop);
+  }
+
+  function step(dt,p){
+    S.t += dt;
+    const r = Re + S.y;
+    const g = mu/(r*r);
+    const rho = rho0*Math.exp(-Math.max(0,S.y)/H);
+    const v = Math.hypot(S.vx,S.vy)+1e-9;
+    const q = 0.5*rho*v*v;
+    S.maxQ=Math.max(S.maxQ,q);
+
+    if(S.t>p.pitStart){
+      S.phase='重力转弯';
+      S.pitch = Math.max(0.05, S.pitch - p.pitRate*dt);
+    }
+
+    let thrust=0, mdot=0;
+    if(S.fuel>0){
+      thrust=p.thrust;
+      mdot=thrust/(p.isp*G0);
+      const burn=mdot*dt;
+      S.fuel=Math.max(0,S.fuel-burn);
+      S.m=Math.max(S.dry,S.m-burn);
+      if(S.fuel===0) S.phase='主发动机截止(MECO)';
+    } else {
+      S.phase='惯性滑行/圆化';
+    }
+
+    const tx=Math.cos(S.pitch), ty=Math.sin(S.pitch);
+    const drag = q*p.CdA;
+    const dx = -drag*(S.vx/v), dy=-drag*(S.vy/v);
+    const ax = (thrust*tx + dx)/S.m;
+    const ay = (thrust*ty + dy)/S.m - g;
+
+    S.vx += ax*dt; S.vy += ay*dt;
+    S.x += S.vx*dt; S.y = Math.max(0,S.y + S.vy*dt);
+
+    const vc = Math.sqrt(mu/(Re+Math.max(1,S.y)));
+    if(Math.abs(S.y-p.targetAlt)<4500 && Math.abs(S.vy)<45 && Math.abs(S.vx-vc)<180){
+      S.phase='入轨成功（近圆轨）';
+      S.running=false;
+    }
+    if(S.y===0 && S.t>4 && S.vy<0){S.phase='回落至地面';S.running=false;}
+  }
+
+  function render(p){
+    const w=sim.clientWidth,h=sim.clientHeight;
+    ctx.clearRect(0,0,w,h);
+
+    const alt=S.y;
+    const scale = Math.max(0.0015, Math.min(0.06, 1800/(alt+2500))); // m -> px
+    const originX = w*0.25 - S.x*scale;
+    const originY = h*0.86 + alt*scale;
+
+    drawSky(ctx,w,h,alt);
+    drawGround(ctx,w,h,originX,originY,scale);
+    drawClouds(ctx,w,h,originX,originY,scale);
+    drawRocket(ctx, originX+S.x*scale, originY-S.y*scale, S.pitch, scale, S.running && S.fuel>0, Math.hypot(S.vx,S.vy));
+    drawScale(ctx,w,h,scale);
+
+    drawRefView(p);
+
+    const v=Math.hypot(S.vx,S.vy);
+    const rho=rho0*Math.exp(-Math.max(0,S.y)/H);
+    const q=0.5*rho*v*v/1000;
+    ui.phase.textContent='阶段: '+S.phase;
+    ui.time.textContent='T+'+S.t.toFixed(1)+' s';
+    ui.alt.textContent='高度: '+S.y.toFixed(0)+' m';
+    ui.vel.textContent='速度: '+v.toFixed(0)+' m/s';
+    const apo=(S.y + (S.vy*S.vy)/(2*(mu/((Re+S.y)*(Re+S.y)))))/1000;
+    ui.apo.textContent='远地点(估): '+Math.max(0,apo).toFixed(1)+' km';
+    ui.qbar.textContent='动压q: '+q.toFixed(1)+' kPa (max '+(S.maxQ/1000).toFixed(1)+')';
+  }
+
+  function drawSky(c,w,h,alt){
+    const k=Math.max(0,1-alt/120000);
+    const g=c.createLinearGradient(0,0,0,h);
+    g.addColorStop(0,`rgba(${8+30*k},${18+40*k},${36+90*k},1)`);
+    g.addColorStop(1,`rgba(${2+10*k},${6+20*k},${18+50*k},1)`);
+    c.fillStyle=g;c.fillRect(0,0,w,h);
+    c.fillStyle='rgba(255,255,255,'+(0.25+0.65*(1-k))+')';
+    for(let i=0;i<90;i++){const x=(i*149)%w,y=(i*83)%h*.7; c.fillRect(x,y,1.2,1.2)}
+  }
+  function drawGround(c,w,h,ox,oy,s){
+    c.fillStyle='#192b1b'; c.fillRect(0,oy,w,h-oy+2);
+    c.fillStyle='#2f4a2a'; for(let i=-8;i<18;i++){c.fillRect(ox+i*120*s,oy-2,80*s,2)}
+    c.fillStyle='#7e8fa8';
+    c.fillRect(ox-14*s,oy-120*s,28*s,120*s); // tower
+  }
+  function drawClouds(c,w,h,ox,oy,s){
+    c.fillStyle='rgba(223,239,255,0.35)';
+    for(let i=0;i<7;i++){
+      const y=oy-(500+i*1800)*s;
+      const x=((i*173)%w)-50;
+      c.beginPath(); c.ellipse(x,y,80*s,24*s,0,0,Math.PI*2); c.fill();
+    }
+  }
+  function drawRocket(c,x,y,pitch,s,flame,speed){
+    c.save(); c.translate(x,y); c.rotate(-pitch+Math.PI/2);
+    const L=70*s, R=8*s;
+    c.fillStyle='#dce8f7'; c.fillRect(-R,-L,R*2,L);
+    c.fillStyle='#ff4f4f'; c.beginPath(); c.moveTo(-R,-L); c.lineTo(0,-L-16*s); c.lineTo(R,-L); c.fill();
+    c.fillStyle='#bacce8'; c.fillRect(-R,L*0.15,R*2,L*0.2);
+    c.fillStyle='#6aa8ff'; c.fillRect(-R*0.35,-L*0.62,R*0.7,R*0.7);
+    c.fillStyle='#879dc2'; c.fillRect(-R*1.5,0,R*0.8,11*s); c.fillRect(R*0.7,0,R*0.8,11*s);
+    if(flame){
+      const f=(0.7+Math.random()*0.6)*(1+speed/1800);
+      c.fillStyle='rgba(255,175,68,.85)'; c.beginPath(); c.moveTo(-R*0.7,L); c.lineTo(0,L+45*s*f); c.lineTo(R*0.7,L); c.fill();
+      for(let i=0;i<32;i++){
+        c.fillStyle=`rgba(255,${120+Math.random()*120|0},${40+Math.random()*70|0},${0.25+Math.random()*0.55})`;
+        c.beginPath(); c.arc((Math.random()-0.5)*12*s, L+Math.random()*65*s*f, Math.random()*2.2*s,0,7); c.fill();
+      }
+    }
+    c.restore();
+  }
+  function drawScale(c,w,h,s){
+    const mPer100=100/s;
+    c.fillStyle='rgba(210,229,255,.75)'; c.fillRect(18,h-22,100,3); c.fillRect(18,h-26,2,10); c.fillRect(118,h-26,2,10);
+    c.font='11px sans-serif'; c.fillText(mPer100.toFixed(0)+' m',48,h-29);
+  }
+  function drawRefView(p){
+    const w=ref.clientWidth,h=ref.clientHeight; rctx.clearRect(0,0,w,h);
+    rctx.fillStyle='#040915'; rctx.fillRect(0,0,w,h);
+    rctx.fillStyle='#1f3a1f'; rctx.fillRect(0,h*0.78,w,h*0.22);
+    const sx=w/2 + S.x*0.008, sy=h*0.78 - S.y*0.008;
+    drawRocket(rctx,sx,sy,S.pitch,0.03,S.running && S.fuel>0, Math.hypot(S.vx,S.vy));
+    rctx.strokeStyle='rgba(120,196,255,.5)'; rctx.strokeRect(6,6,w-12,h-12);
+  }
+})();
+</script>
+</body>
+</html>
