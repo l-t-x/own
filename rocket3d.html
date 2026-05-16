@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D 火箭发射入轨模拟（单文件）</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#050913;color:#eaf2ff;font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}
+    #c{display:block;width:100%;height:100%}
+    #hud{position:fixed;left:10px;top:10px;display:flex;flex-wrap:wrap;gap:8px;z-index:10}
+    .b{font-size:12px;padding:6px 9px;border:1px solid #7da2d855;background:rgba(6,16,36,.55);border-radius:8px;backdrop-filter:blur(4px)}
+    #panel{position:fixed;right:10px;top:10px;z-index:10;width:min(360px,92vw);max-height:95vh;overflow:auto;background:rgba(10,20,40,.7);border:1px solid #7da2d844;border-radius:10px;padding:10px}
+    .row{display:grid;grid-template-columns:110px 1fr 52px;gap:6px;align-items:center;margin:6px 0;font-size:12px}
+    button{padding:8px 10px;border-radius:8px;border:1px solid #83b5ff66;background:#0f2b52;color:#e8f6ff;cursor:pointer}
+    .btns{display:flex;gap:8px;flex-wrap:wrap}
+    h3{margin:8px 0;font-size:14px}
+    p,li{font-size:12px;color:#bdd0ee;line-height:1.5}
+    @media (max-width:900px){#panel{transform:translateX(calc(100% - 32px));transition:.2s}#panel:hover,#panel:focus-within{transform:translateX(0)}}
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div class="b" id="phase">阶段: 待机</div><div class="b" id="t">T+0.0s</div><div class="b" id="alt">高度: 0m</div><div class="b" id="vel">速度: 0m/s</div><div class="b" id="q">动压: 0kPa</div>
+</div>
+<div id="panel">
+  <h3>3D 火箭模拟参数</h3>
+  <div class="row"><label>m0(kg)</label><input id="m0" type="range" min="150000" max="700000" step="1000" value="420000"><span id="m0v"></span></div>
+  <div class="row"><label>T(MN)</label><input id="thrust" type="range" min="3" max="12" step="0.1" value="7.6"><span id="tv"></span></div>
+  <div class="row"><label>Isp(s)</label><input id="isp" type="range" min="220" max="360" step="1" value="305"><span id="iv"></span></div>
+  <div class="row"><label>俯仰开始(s)</label><input id="ps" type="range" min="5" max="40" step="1" value="12"><span id="psv"></span></div>
+  <div class="row"><label>俯仰速率(°/s)</label><input id="pr" type="range" min="0.15" max="1.4" step="0.01" value="0.52"><span id="prv"></span></div>
+  <div class="row"><label>目标高度(km)</label><input id="ta" type="range" min="180" max="550" step="5" value="220"><span id="tav"></span></div>
+  <div class="row"><label>时间倍率</label><input id="warp" type="range" min="0.4" max="6" step="0.1" value="1"><span id="wv"></span></div>
+  <div class="btns"><button id="launch">点火发射</button><button id="reset">复位</button></div>
+  <h3>说明</h3>
+  <ul>
+    <li>3D 场景：地面网格 + 发射塔 + 跟踪相机，增强观察。</li>
+    <li>物理：重力衰减、阻力、质量流失与重力转弯。</li>
+    <li>入轨近似判据：目标高度附近且垂向速度较小、切向速度接近圆轨道速度。</li>
+  </ul>
+</div>
+<script>
+(() => {
+const G0=9.80665,Re=6371000,mu=3.986004418e14,rho0=1.225,H=8500;
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const S={run:false,t:0,x:0,y:0,z:0,vx:0,vy:0,vz:0,m:0,dry:0,fuel:0,pitch:Math.PI/2,yaw:0,phase:'待机',maxQ:0};
+const ids=['m0','thrust','isp','ps','pr','ta','warp'];
+function by(i){return document.getElementById(i)}
+function p(){return{m0:+by('m0').value,T:+by('thrust').value*1e6,isp:+by('isp').value,ps:+by('ps').value,pr:+by('pr').value*Math.PI/180,ta:+by('ta').value*1000,warp:+by('warp').value,CdA:12};}
+function labels(){const P=p();by('m0v').textContent=(P.m0/1000).toFixed(0)+'t';by('tv').textContent=(P.T/1e6).toFixed(1);by('iv').textContent=P.isp;by('psv').textContent=P.ps;by('prv').textContent=(P.pr*180/Math.PI).toFixed(2);by('tav').textContent=(P.ta/1000).toFixed(0);by('wv').textContent=P.warp.toFixed(1)+'x';}
+ids.forEach(i=>by(i).oninput=labels);labels();
+function reset(){const P=p();Object.assign(S,{run:false,t:0,x:0,y:0,z:0,vx:0,vy:0,vz:0,m:P.m0,dry:P.m0*0.16,fuel:P.m0*0.84,pitch:Math.PI/2,yaw:0,phase:'待机',maxQ:0});}
+by('launch').onclick=()=>{S.run=true;S.phase='起飞爬升'};by('reset').onclick=reset;reset();
+function rs(){cv.width=innerWidth*devicePixelRatio;cv.height=innerHeight*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0)}addEventListener('resize',rs);rs();
+let lt=performance.now();requestAnimationFrame(loop);
+function loop(nt){const P=p();let dt=Math.min(0.03,(nt-lt)/1000)*P.warp;lt=nt;if(S.run)step(dt,P);draw(P);requestAnimationFrame(loop)}
+function step(dt,P){S.t+=dt;const r=Re+S.y,g=mu/(r*r),v=Math.hypot(S.vx,S.vy,S.vz)+1e-9,rho=rho0*Math.exp(-Math.max(0,S.y)/H),q=0.5*rho*v*v;S.maxQ=Math.max(S.maxQ,q);
+if(S.t>P.ps){S.pitch=Math.max(0.03,S.pitch-P.pr*dt);S.phase='重力转弯';S.yaw+=0.02*dt;}
+let T=0;if(S.fuel>0){T=P.T;const md=T/(P.isp*G0),burn=Math.min(S.fuel,md*dt);S.fuel-=burn;S.m=Math.max(S.dry,S.m-burn);}else S.phase='惯性滑行';
+const tx=Math.cos(S.pitch)*Math.cos(S.yaw),ty=Math.sin(S.pitch),tz=Math.cos(S.pitch)*Math.sin(S.yaw);
+const drag=q*P.CdA,dx=-drag*(S.vx/v),dy=-drag*(S.vy/v),dz=-drag*(S.vz/v);
+S.vx+=((T*tx+dx)/S.m)*dt;S.vy+=((T*ty+dy)/S.m-g)*dt;S.vz+=((T*tz+dz)/S.m)*dt;
+S.x+=S.vx*dt;S.y=Math.max(0,S.y+S.vy*dt);S.z+=S.vz*dt;
+const vh=Math.hypot(S.vx,S.vz),vc=Math.sqrt(mu/(Re+Math.max(1,S.y)));
+if(Math.abs(S.y-P.ta)<4500&&Math.abs(S.vy)<45&&Math.abs(vh-vc)<180){S.phase='入轨成功(近圆轨)';S.run=false;}
+if(S.y===0&&S.t>4&&S.vy<0){S.phase='回落地面';S.run=false;}}
+function proj(X,Y,Z,c){const dx=X-c.x,dy=Y-c.y,dz=Z-c.z;const cy=Math.cos(-c.yaw),sy=Math.sin(-c.yaw),cp=Math.cos(-c.pitch),sp=Math.sin(-c.pitch);let x=cy*dx-sy*dz,z=sy*dx+cy*dz,y=cp*dy-sp*z;z=sp*dy+cp*z;const f=650/Math.max(80,z+900);return{x:innerWidth*0.5+x*f,y:innerHeight*0.6-y*f,s:f,z};}
+function draw(P){ctx.clearRect(0,0,innerWidth,innerHeight);const k=Math.max(0,1-S.y/140000),g=ctx.createLinearGradient(0,0,0,innerHeight);g.addColorStop(0,`rgba(${8+30*k},${18+35*k},${30+90*k},1)`);g.addColorStop(1,'#050913');ctx.fillStyle=g;ctx.fillRect(0,0,innerWidth,innerHeight);
+const cam={x:S.x-1200*Math.cos(S.yaw),y:S.y+450,z:S.z-1200*Math.sin(S.yaw),yaw:S.yaw+0.2,pitch:-0.1};
+ctx.strokeStyle='rgba(120,180,255,.22)';for(let i=-12;i<=12;i++){line3(i*100,0,-1200,i*100,0,1200,cam);line3(-1200,0,i*100,1200,0,i*100,cam)}
+ctx.fillStyle='#7f93b4';box3(-18,0,-18,36,140,36,cam); // tower
+rocket3(S.x,S.y,S.z,S.pitch,S.yaw,cam,S.run&&S.fuel>0,Math.hypot(S.vx,S.vy,S.vz));
+by('phase').textContent='阶段: '+S.phase;by('t').textContent='T+'+S.t.toFixed(1)+'s';by('alt').textContent='高度: '+S.y.toFixed(0)+'m';const v=Math.hypot(S.vx,S.vy,S.vz);by('vel').textContent='速度: '+v.toFixed(0)+'m/s';by('q').textContent='动压: '+(0.5*rho0*Math.exp(-Math.max(0,S.y)/H)*v*v/1000).toFixed(1)+'kPa';
+}
+function line3(x1,y1,z1,x2,y2,z2,c){const a=proj(x1,y1,z1,c),b=proj(x2,y2,z2,c);if(a.z<-500||b.z<-500)return;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();}
+function box3(x,y,z,w,h,d,c){const P=[[x,y,z],[x+w,y,z],[x+w,y+h,z],[x,y+h,z],[x,y,z+d],[x+w,y,z+d],[x+w,y+h,z+d],[x,y+h,z+d]].map(v=>proj(v[0],v[1],v[2],c));ctx.globalAlpha=.9;[[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]].forEach(e=>{ctx.beginPath();ctx.moveTo(P[e[0]].x,P[e[0]].y);ctx.lineTo(P[e[1]].x,P[e[1]].y);ctx.stroke()});ctx.globalAlpha=1}
+function rocket3(x,y,z,pitch,yaw,c,flame,spd){const b=proj(x,y,z,c),t=proj(x+Math.cos(pitch)*Math.cos(yaw)*80,y+Math.sin(pitch)*80,z+Math.cos(pitch)*Math.sin(yaw)*80,c);ctx.strokeStyle='#d8e8ff';ctx.lineWidth=Math.max(1,3*b.s);ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(t.x,t.y);ctx.stroke();ctx.fillStyle='#ff5959';ctx.beginPath();ctx.arc(t.x,t.y,4*b.s,0,7);ctx.fill();if(flame){ctx.strokeStyle='rgba(255,180,80,.8)';for(let i=0;i<22;i++){const r=(20+Math.random()*45)*(1+spd/2200),fx=b.x+(Math.random()-.5)*8*b.s,fy=b.y+(Math.random()-.5)*8*b.s+r*b.s;ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(fx,fy);ctx.stroke();}}}
+})();
+</script>
+</body>
+</html>
